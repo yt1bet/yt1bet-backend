@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec, spawn } = require('child_process');
+const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -15,8 +15,19 @@ if (process.env.YT_COOKIES) {
 }
 
 function getCookiesArg() {
-  if (fs.existsSync(COOKIES_PATH)) return `--cookies "${COOKIES_PATH}"`;
+  if (process.env.YT_COOKIES && fs.existsSync(COOKIES_PATH)) {
+    return `--cookies "${COOKIES_PATH}"`;
+  }
   return '';
+}
+
+function getClientArgs() {
+  // When cookies are present, use web client (android doesn't support cookies)
+  // When no cookies, use android to bypass JS runtime requirement
+  if (process.env.YT_COOKIES) {
+    return '--extractor-args "youtube:player_client=web,tv_embedded"';
+  }
+  return '--extractor-args "youtube:player_client=android,web"';
 }
 
 app.get('/', (req, res) => {
@@ -28,18 +39,14 @@ app.get('/download', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'No URL provided' });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
-  const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
   const cookiesArg = getCookiesArg();
-
-  // Common yt-dlp flags to bypass JS runtime check
-  const commonFlags = `--extractor-args "youtube:player_client=android,web" --no-playlist ${cookiesArg}`;
+  const clientArgs = getClientArgs();
+  const commonFlags = `${clientArgs} --no-playlist ${cookiesArg}`;
 
   try {
     if (format === 'mp3') {
-      // Audio extraction
-      const outputPath = path.join(tmpDir, 'output.mp3');
+      const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
       const cmd = `yt-dlp ${commonFlags} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${url}"`;
-
       await runCommand(cmd);
 
       const files = fs.readdirSync(tmpDir);
@@ -49,14 +56,15 @@ app.get('/download', async (req, res) => {
       const filePath = path.join(tmpDir, mp3File);
       res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
       res.setHeader('Content-Type', 'audio/mpeg');
-
       const stream = fs.createReadStream(filePath);
       stream.pipe(res);
       stream.on('end', () => cleanup(tmpDir));
       stream.on('error', () => cleanup(tmpDir));
 
     } else {
-      // MP4 — merge video + audio with ffmpeg
+      const outputPath = path.join(tmpDir, 'output.mp4');
+      const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
+
       let formatSelector;
       if (quality === '1080p') {
         formatSelector = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]';
@@ -68,25 +76,23 @@ app.get('/download', async (req, res) => {
         formatSelector = 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]';
       }
 
-      const outputPath = path.join(tmpDir, 'output.mp4');
       const cmd = `yt-dlp ${commonFlags} -f "${formatSelector}" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
-
       await runCommand(cmd);
 
-      if (!fs.existsSync(outputPath)) {
-        // Try fallback
-        const fallbackCmd = `yt-dlp ${commonFlags} -f "best[ext=mp4]/best" -o "${outputPath}" "${url}"`;
-        await runCommand(fallbackCmd);
+      // Check for merged output or any mp4
+      let finalFile = outputPath;
+      if (!fs.existsSync(finalFile)) {
+        const files = fs.readdirSync(tmpDir);
+        const mp4File = files.find(f => f.endsWith('.mp4'));
+        if (mp4File) finalFile = path.join(tmpDir, mp4File);
+        else throw new Error('Video download failed');
       }
 
-      if (!fs.existsSync(outputPath)) throw new Error('Video download failed');
-
-      const stat = fs.statSync(outputPath);
-      res.setHeader('Content-Disposition', `attachment; filename="video_${quality || '360p'}.mp4"`);
+      const stat = fs.statSync(finalFile);
+      res.setHeader('Content-Disposition', `attachment; filename="video_${quality || '720p'}.mp4"`);
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Content-Length', stat.size);
-
-      const stream = fs.createReadStream(outputPath);
+      const stream = fs.createReadStream(finalFile);
       stream.pipe(res);
       stream.on('end', () => cleanup(tmpDir));
       stream.on('error', () => cleanup(tmpDir));
