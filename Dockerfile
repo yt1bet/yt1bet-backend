@@ -1,23 +1,20 @@
 FROM python:3.11-slim
 
-# Install Node.js
-RUN apt-get update && apt-get install -y curl ffmpeg && \
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean
+# Install Node.js and ffmpeg
+RUN apt-get update && apt-get install -y \
+    nodejs \
+    npm \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp latest
+# Always install latest yt-dlp on every deploy
 RUN pip install -U yt-dlp
 
-# Set working directory
 WORKDIR /app
-
-# Copy files
-COPY package.json .
-COPY server.js .
-
-# Install node deps
+COPY package*.json ./
 RUN npm install
+COPY . .
 
-# Start server
-CMD ["node", "server.js"]
+# Auto-update yt-dlp on startup then run server
+CMD pip install -U yt-dlp && node server.js
