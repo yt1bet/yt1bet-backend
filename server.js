@@ -7,29 +7,6 @@ const os = require('os');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Write cookies file if env var exists
-const COOKIES_PATH = path.join(os.tmpdir(), 'yt_cookies.txt');
-if (process.env.YT_COOKIES) {
-  fs.writeFileSync(COOKIES_PATH, process.env.YT_COOKIES);
-  console.log('YouTube cookies loaded from environment');
-}
-
-function getCookiesArg() {
-  if (process.env.YT_COOKIES && fs.existsSync(COOKIES_PATH)) {
-    return `--cookies "${COOKIES_PATH}"`;
-  }
-  return '';
-}
-
-function getClientArgs() {
-  // When cookies are present, use web client (android doesn't support cookies)
-  // When no cookies, use android to bypass JS runtime requirement
-  if (process.env.YT_COOKIES) {
-    return '--extractor-args "youtube:player_client=web,tv_embedded"';
-  }
-  return '--extractor-args "youtube:player_client=android,web"';
-}
-
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'yt-dlp server running' });
 });
@@ -39,9 +16,9 @@ app.get('/download', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'No URL provided' });
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
-  const cookiesArg = getCookiesArg();
-  const clientArgs = getClientArgs();
-  const commonFlags = `${clientArgs} --no-playlist ${cookiesArg}`;
+  
+  // Use iOS client — most reliable, no JS runtime needed, no cookies needed
+  const commonFlags = `--extractor-args "youtube:player_client=ios" --no-playlist -q`;
 
   try {
     if (format === 'mp3') {
@@ -63,7 +40,6 @@ app.get('/download', async (req, res) => {
 
     } else {
       const outputPath = path.join(tmpDir, 'output.mp4');
-      const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
 
       let formatSelector;
       if (quality === '1080p') {
@@ -79,7 +55,6 @@ app.get('/download', async (req, res) => {
       const cmd = `yt-dlp ${commonFlags} -f "${formatSelector}" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
       await runCommand(cmd);
 
-      // Check for merged output or any mp4
       let finalFile = outputPath;
       if (!fs.existsSync(finalFile)) {
         const files = fs.readdirSync(tmpDir);
