@@ -17,8 +17,8 @@ app.get('/download', async (req, res) => {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
   
-  // mweb client works without PO tokens or cookies
-  const commonFlags = `--extractor-args "youtube:player_client=mweb" --no-playlist -q`;
+  // Use android_vr client - doesn't need PO token and works from datacenters
+  const commonFlags = `--extractor-args "youtube:player_client=android_vr" --no-playlist -q`;
 
   try {
     if (format === 'mp3') {
