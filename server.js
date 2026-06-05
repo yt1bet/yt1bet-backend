@@ -17,8 +17,8 @@ app.get('/download', async (req, res) => {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
   
-  // Use iOS client — most reliable, no JS runtime needed, no cookies needed
-  const commonFlags = `--extractor-args "youtube:player_client=ios" --no-playlist -q`;
+  // mweb client works without PO tokens or cookies
+  const commonFlags = `--extractor-args "youtube:player_client=mweb" --no-playlist -q`;
 
   try {
     if (format === 'mp3') {
