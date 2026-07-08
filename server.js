@@ -1,5 +1,5 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -7,8 +7,33 @@ const os = require('os');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ---- CORS ----
+// Replace with your actual frontend domain(s) once the new domain is live.
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'https://yt1bet.vercel.app',      // your current Vercel domain
+  'https://dlmate.site',            // your new domain, once live
+  'https://www.dlmate.site'
+];
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // YouTube client fallback order
 const YT_CLIENTS = ['android_vr', 'android', 'mweb'];
+
+// Basic URL validation — only allow http(s) links to youtube/instagram domains.
+// This does not replace execFile's protection against shell injection, but it
+// stops obviously malformed/malicious input early.
+const URL_PATTERN = /^https?:\/\/(www\.|m\.)?(youtube\.com|youtu\.be|instagram\.com)\//i;
 
 function isYouTube(url) {
   return url.includes('youtube.com') || url.includes('youtu.be');
@@ -25,15 +50,16 @@ app.get('/', (req, res) => {
 app.get('/download', async (req, res) => {
   const { url, format, quality } = req.query;
   if (!url) return res.status(400).json({ error: 'No URL provided' });
+  if (!URL_PATTERN.test(url)) {
+    return res.status(400).json({ error: 'Only YouTube or Instagram URLs are supported' });
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytdl-'));
 
   try {
     if (isInstagram(url)) {
-      // Instagram — simple, no client args needed
       await downloadInstagram(url, format, quality, tmpDir, res);
     } else {
-      // YouTube — try multiple clients
       await downloadYouTube(url, format, quality, tmpDir, res);
     }
   } catch (err) {
@@ -46,12 +72,10 @@ app.get('/download', async (req, res) => {
 });
 
 async function downloadInstagram(url, format, quality, tmpDir, res) {
-  const commonFlags = `--no-playlist -q`;
-  
   if (format === 'mp3') {
     const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
-    const cmd = `yt-dlp ${commonFlags} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${url}"`;
-    await runCommand(cmd);
+    const args = ['--no-playlist', '-q', '-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', outputTemplate, url];
+    await runYtDlp(args);
 
     const files = fs.readdirSync(tmpDir);
     const mp3File = files.find(f => f.endsWith('.mp3'));
@@ -67,8 +91,8 @@ async function downloadInstagram(url, format, quality, tmpDir, res) {
 
   } else {
     const outputPath = path.join(tmpDir, 'output.mp4');
-    const cmd = `yt-dlp ${commonFlags} -f "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
-    await runCommand(cmd);
+    const args = ['--no-playlist', '-q', '-f', 'bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best', '--merge-output-format', 'mp4', '-o', outputPath, url];
+    await runYtDlp(args);
 
     let finalFile = outputPath;
     if (!fs.existsSync(finalFile)) {
@@ -95,12 +119,12 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
   for (const client of YT_CLIENTS) {
     try {
       console.log(`Trying client: ${client}`);
-      const commonFlags = `--extractor-args "youtube:player_client=${client}" --no-playlist -q`;
+      const clientArgs = ['--extractor-args', `youtube:player_client=${client}`, '--no-playlist', '-q'];
 
       if (format === 'mp3') {
         const outputTemplate = path.join(tmpDir, 'output.%(ext)s');
-        const cmd = `yt-dlp ${commonFlags} -x --audio-format mp3 --audio-quality 0 -o "${outputTemplate}" "${url}"`;
-        await runCommand(cmd);
+        const args = [...clientArgs, '-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', outputTemplate, url];
+        await runYtDlp(args);
 
         const files = fs.readdirSync(tmpDir);
         const mp3File = files.find(f => f.endsWith('.mp3'));
@@ -129,8 +153,8 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
           formatSelector = 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]';
         }
 
-        const cmd = `yt-dlp ${commonFlags} -f "${formatSelector}" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
-        await runCommand(cmd);
+        const args = [...clientArgs, '-f', formatSelector, '--merge-output-format', 'mp4', '-o', outputPath, url];
+        await runYtDlp(args);
 
         let finalFile = outputPath;
         if (!fs.existsSync(finalFile)) {
@@ -162,10 +186,12 @@ async function downloadYouTube(url, format, quality, tmpDir, res) {
   throw new Error(lastError?.message || 'All download methods failed');
 }
 
-function runCommand(cmd) {
+// Uses execFile instead of exec — arguments are passed as an array, never
+// interpolated into a shell string, which closes the command injection hole.
+function runYtDlp(args) {
   return new Promise((resolve, reject) => {
-    console.log('Running:', cmd);
-    exec(cmd, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
+    console.log('Running yt-dlp with args:', args);
+    execFile('yt-dlp', args, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         console.error('stderr:', stderr);
         reject(new Error(stderr || err.message));
